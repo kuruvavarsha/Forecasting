@@ -1,0 +1,914 @@
+---
+title: "BANA 7050 - Assignment Final"
+author: "Varsha Kuruva"
+format: html
+editor: visual
+embed-resources: true
+knitr:
+ opts_chunk:
+  echo: TRUE
+  code-fold: TRUE
+  warning: FALSE
+  message: FALSE
+---
+
+## Data Exploration
+
+#### Why the Temperature Anomalies Data set?
+
+The data set I have taken up is the Temperature Anomalies Data set . This data set has been sourced by National Centers for Environmental Information who publish it on a monthly basis. I have always been fascinated by how trivial we are in the grand scheme of things, rising temperatures globally are proof of the fact that our lives are defined by the world around us and we need to respect what is out there to survive and this led me to choose this data set as it will help forecast what is ahead.
+
+#### **Data Generating Process:**
+
+The data generating process is handled by National Centers for Environmental Information or NOAA . The data is calculated every month by observing the rise in temperature on both ground and sea level.Considering that global rise in temperature depends on factors beyond our control , it is a variable that is difficult to predict or forecast.Data Source <https://www.ncei.noaa.gov/access/monitoring/climate-at-a-glance/global/time-series>
+
+#### Exploratory Data Analysis :
+
+```{r}
+
+library(tidyverse)
+library(rmarkdown)
+library(gapminder)
+library(janitor)
+library(lubridate)
+library(scales)
+library(gt)
+library(patchwork)
+library(kableExtra)
+library(data.table)
+library(corrplot)
+library(zoo)
+library(forecast)
+library(fable)
+library(feasts)
+library(tsibble)
+library(tseries)
+
+df <- read.csv("Temp.csv", header=TRUE,skip=4)
+attach(df)
+
+TempData <- df %>% mutate(Year = ym(Year)) %>% filter(Year >= '2010-01-01') %>% select(Year, Value) 
+sample_index <- as.integer(0.70*nrow(TempData))
+data_train <- TempData[1:sample_index,]
+data_test <- TempData[(sample_index+1) : nrow(TempData),]
+
+head(TempData)
+```
+
+#### Summary Statistics
+
+```{r,warning=FALSE,message=FALSE}
+
+attach(data_train)
+
+x <- row.names(data.frame(unclass(round(summary(Value),3))))
+data_summary <- data.frame(x, unclass(round(summary(Value),3)))
+rownames(data_summary) <- NULL
+colnames(data_summary) <- c("Summary Statistics","Value")
+data_summary <- rbind(data_summary, c("Std. Dev.", round(sd(Value),3)), c("Number of data points", nrow(data_train)*1.0))
+kable(data_summary,format = 'simple', digits = 4, caption = "Summary statistics")
+```
+
+#### Density Plots
+
+Looking at the plots/ visualizations , we can infer that there are negligible outliers in the data as we observed earlier too from our code snippet. The boxplot shows us that they are any significant outliers in our data.The histogram shows us that the data is slightly right skewed and symmetrical in a way. The density plot seems to show us that the data is symmetrical with a significant curve that looks to be normally distributed.
+
+```{r,warning=FALSE,message=FALSE}
+
+hist <- data_train %>%
+  ggplot() +
+  geom_histogram(aes(Value)) +
+  theme_bw()+
+  labs(title = "Histogram of Temperature")
+
+dens <- data_train %>%
+  ggplot() +
+  geom_density(aes(Value)) +
+  theme_bw()+
+  labs(title = "Density plot of Temperature")
+
+violin <- data_train %>%
+  ggplot() +
+  geom_violin(aes("", Value)) +
+  theme_bw()+
+  labs(title = "Violin plot of Temperature")
+
+boxplot <- data_train %>%
+  ggplot() +
+  geom_boxplot(aes("", Value)) +
+  theme_bw()+
+  labs(title = "Boxplot of Temperature")
+
+hist + violin + dens + boxplot
+
+```
+
+#### Moving Average
+
+After filtering our data, we visualize the moving averages with different orders to gain further insight into our time series data. Assuming that the temperature changes increase/decrease roughly in a consistent way throughout a single year, the order 13 moving average seems to fit the data better
+
+```{r}
+
+Data_ma_data <- data_train %>%
+  arrange(Year) %>%
+  mutate(value_ma_13 = rollapply(Value, 13, FUN = mean, align = "center", fill = NA))
+
+Data_ma_data %>%
+  ggplot() +
+  geom_line(aes(Year, Value), size = 0.8,alpha=0.8) +
+  geom_line(aes(Year, value_ma_13), size = 0.8, color = "red") +
+  theme_bw()+
+  ylab('Temperature')+
+  xlab("Year-Month")
+
+```
+
+From the above graph we can see that 13th order Moving average gives out a much more smoothened average and follows the overall trend of the data.
+
+#### Reminder - excluding Moving average
+
+```{r}
+
+data_decomp <- data_train %>%
+  mutate(
+    ma_13_center = rollapply(
+      Value,
+      13,
+      FUN = mean,
+      align = "center", fill = NA
+    )
+  ) %>%
+  mutate(resid = Value - ma_13_center) %>%
+  select(Year, Value, ma_13_center, resid)
+
+
+data_decomp_plot <- data_decomp %>%
+  pivot_longer(
+    Value:resid,
+    names_to = "decomposition",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    decomposition = case_when(
+      decomposition == "Value" ~ "Original Data",
+      decomposition == "ma_13_center" ~ "Moving Average",
+      decomposition == "resid" ~ "Remainder"
+    )
+  ) %>%
+  mutate(
+    decomposition = factor(
+      decomposition,
+      labels = c(
+        "Original Data",
+        "Moving Average",
+        "Remainder"
+      ),
+      levels = c(
+        "Original Data",
+        "Moving Average",
+        "Remainder"
+      )
+    )
+  ) %>%
+  ggplot() +
+  geom_line(aes(Year, Value), size = 0.8) +
+  facet_wrap(
+    ~decomposition,
+    nrow = 3,
+    scales = "free"
+  ) +
+  theme_bw() +
+  ylab("") +
+  xlab("Yeah-Month") +
+  ggtitle(
+    "Global Anomaly = Moving Average + Remainder"
+  )
+
+data_decomp_plot
+
+```
+
+The reminder series do not seem to be any obvious patterns that can be seen in the data. However, we could confirm our observation using a lag plot as below.
+
+#### Seasonality in our data :
+
+Visualizing the lag plots shows us that there is correlation between remainder and remainder (lag) which implies that there is autocorrelation in the remainder.This means that the remainder can be interpreted in some manner using the past remainder. This means that seasonality could play a role in our data set.
+
+```{r}
+
+data_decomp_lag <- data_decomp %>%
+  drop_na() %>%
+  mutate(across(where(is.numeric), list(lag = lag))) %>%
+  select(
+    Year, Value, Value_lag,
+    ma_13_center, ma_13_center_lag, resid, resid_lag
+  )
+
+
+data_decomp_auto <- data_decomp_lag %>%
+  drop_na()
+
+cor_val <- round(cor(data_decomp_auto$Value, data_decomp_auto$Value_lag), 2)
+cor_ma <- round(cor(data_decomp_auto$ma_13_center, data_decomp_auto$ma_13_center_lag), 2)
+cor_resid <- round(cor(data_decomp_auto$resid, data_decomp_auto$resid_lag), 2)
+
+value_plot <- data_decomp_lag %>%
+  ggplot() +
+  geom_point(aes(Value_lag, Value)) +
+  geom_smooth(aes(Value_lag, Value), method = "lm", se = F) +
+  labs(
+    title = "Global Temperature Anomaly",
+    subtitle = paste("Cor = ", cor_val)
+  ) +
+  theme_light()+
+  ylab('Temperature')+
+  xlab('Temperature (Lag)')
+
+ma_13_center_plot <- data_decomp_lag %>%
+  ggplot() +
+  geom_point(aes(ma_13_center_lag, ma_13_center)) +
+  geom_smooth(aes(ma_13_center_lag, ma_13_center), method = "lm", se = F) +
+  labs(
+    title = "Moving Average",
+    subtitle = paste("Cor = ", cor_ma)
+  ) +
+  theme_light()+
+  ylab('Moving Average')+
+  xlab('Moving Average (Lag)')
+
+resid_plot <- data_decomp_lag %>%
+  ggplot() +
+  geom_point(aes(resid_lag, resid)) +
+  geom_smooth(aes(resid_lag, resid), method = "lm", se = F) +
+  labs(
+    title = "Remainder",
+    subtitle = paste("Cor = ", cor_resid)
+  ) +
+  theme_light()+
+  ylab('Remainder')+
+  xlab('Remainder (Lag)')
+
+value_plot + ma_13_center_plot + resid_plot
+
+```
+
+```{r}
+data_decomp %>%
+  drop_na() %>%
+  as_tsibble()%>%
+  mutate(Year = yearmonth(Year))%>%
+  gg_lag(resid, geom = "point", lags = 1:12, ) +
+  geom_smooth(aes(color=NULL),method='lm',color='red',se=F) +
+  labs(title="Lag Plot of the residuals to test seasonality")
+```
+
+Based on the lag plot (period=1), we could observer that is not strong autocorrelation between remainder. Hence we can assume that there is no seasonality in the remainder to be modeled and could be considered as white noise in this scenario.
+
+#### Time series decomposition and Seasonality
+
+```{r}
+
+data_train <- as_tsibble(data_train,index = Year, regular = TRUE)
+
+data_train$Year <- as.yearmon(data_train$Year)
+
+data_train$Year <- yearmonth(data_train$Year)
+
+data_train <- as_tsibble(data_train,index = Year)
+
+classicdecom <- data_train %>%
+  model(
+    classical_decomposition(Value,'additive')
+  ) %>%
+  components() 
+
+autoplot(classicdecom)
+
+
+```
+
+#### Stationarity Check:
+
+Global temperature anomalies data is prone to a lot of fluctuations due to a multitude of factors. Pollution levels, green house gases, the pandemic in between could have had a significant impact on our data thereby there being a need to check for stationarity/non stationarity.To confirm non stationarity, plotting rolling averages and rolling standard deviations will be our first step in analysis.
+
+***Rolling Average :***
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+library(zoo)
+data_roll <- data_train %>%
+  mutate(
+    close_mean = zoo::rollmean(
+      Value, 
+      k = 60, 
+      fill = NA),
+    close_sd = zoo::rollapply(
+      Value, 
+      FUN = sd, 
+      width = 60, 
+      fill = NA)
+  )
+
+data_rollmean <- data_roll %>%
+  ggplot() +
+    geom_line(aes(Year, Value)) +
+  geom_line(aes(Year, close_mean),color='blue') +
+  theme_bw() +
+  ggtitle("Mean of Global Temp Anomalies over time") +
+  ylab("Temperature Anomalies") +
+  xlab("Time")
+
+data_rollmean
+```
+
+The above plot tells us that the mean is not stationary because it is not constant , confirming our assumptions.
+
+***Rolling Standard Deviation :***
+
+From the below plot, it is obvious that our data is variance non stationary.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+data_rollsd <- data_roll %>%
+  ggplot() +
+  geom_line(aes(Year, close_sd)) +
+  geom_smooth(aes(Year,close_sd),method='lm',se=F)+
+  theme_bw() +
+  ggtitle("Global Temperature Anomalies") +
+  ylab("Temp Anomalies") +
+  xlab("Year")
+
+data_rollsd
+```
+
+#### Transformation:
+
+**Variance Stationary:**
+
+The data at hand is variance non stationary as seen above, therefore it needs to be transformed.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+
+
+data_trans <- data_train%>%
+  mutate(data_log = log1p(Value)) %>%
+  mutate(data_boxcox = forecast::BoxCox(Value, lambda = "auto"))
+
+data_trans %>%
+  ggplot() +
+  geom_line(aes(Year, data_log)) +
+  geom_line(aes(Year, data_boxcox),color='blue') +
+  theme_bw() +
+  ggtitle("Global Temp Anomalies(Log and Box-Cox)") +
+  ylab(" Units Transformed") +
+  xlab("Year")
+```
+
+From the above observations, both box-cox and log transformations are doing good job at making the data variance stationary.
+
+Log transformation reduces variance greatly compared to Box-Cox transformation. So log transformation is preferred over Box-Cox in our case.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+data_diff <- data_train %>%
+  mutate(
+    data_log = log1p(Value),
+    data_log_diff = data_log - lag(data_log,12)) %>%
+  drop_na() %>%
+  as_tsibble(index=Year)
+
+
+
+
+data_diff %>%
+  ggplot() +
+  geom_line(aes(Year, data_log)) +
+  theme_bw() +
+  ggtitle("Temp Anomalies (Log)") +
+  ylab("Log Transformed Temp Units)") +
+  xlab("Year")+
+theme_bw()
+```
+
+#### *Seasonally Differenced:*
+
+We know that our temperature anomalies dataset has seasonality in it from prior analysis, we are therefore seasonally differencing it.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+data_diff %>%
+  ggplot() +
+  geom_line(aes(Year, data_log_diff)) +
+  theme_bw() +
+  ggtitle("Temp Anomalies (Log; Seasonally Differenced)") +
+  ylab("Temp Anomalies Units(Seasonally Differenced)") +
+  xlab("Year")+
+theme_bw()
+```
+
+#### Stationarity Tests:
+
+Performing Augmented Dickey Fuller and KPSS test on the transformed data to check for further presence of non stationarity.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+adf.test(data_diff$data_log_diff)
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+log_diff_kpss = data_diff %>%
+features(data_diff, unitroot_kpss)
+
+log_diff_kpss
+```
+
+The p value after performing **KPSS test is 0.01 which is less than 0.05**, indicating that the transformed data still is non stationary. So, checking if the data is mean non-stationary
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+data_roll_trans <- data_diff %>%
+  mutate(
+    data_mean = zoo::rollmean(
+      data_log_diff, 
+      k = 12, 
+      fill = NA)
+  )
+
+data_roll_trans %>%
+  ggplot() +
+    geom_line(aes(Year, data_log_diff)) +
+  geom_line(aes(Year, data_mean),color='blue') +
+  theme_bw() +
+  ggtitle("Temp Data Mean over Time (12 month rolling window)") +
+  ylab("Temp Units") +
+  xlab("Year")
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+data_diff <- data_diff %>%
+  mutate(
+    data_log_diff_up = data_log_diff - lag(data_log_diff)) %>%
+  drop_na() %>%
+  as_tsibble(index=Year)
+
+data_diff %>%
+  ggplot() +
+  geom_line(aes(Year, data_log_diff_up)) +
+  theme_bw() +
+  ggtitle("Temp Anomalies (Log; Seasonal, First Difference)") +
+  ylab("Log Transformed Temp Units (Seasonal, First Difference)") +
+  xlab("Year")+
+theme_bw()
+```
+
+Performing the KPSS test on the further transformed data to check for remaining non stationarity.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+log_diff_kpss_up = data_diff %>%
+features(data_log_diff_up, unitroot_kpss)
+
+log_diff_kpss_up
+```
+
+*Here the p value is **0.1 which is greater than 0.05**, hence the transformed data is stationary.*
+
+**ACF AND PACF**
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+ACF1=acf(data_train$Value) %>%
+  autoplot()
+
+PACF1=pacf(data_train$Value) %>%
+  autoplot()
+```
+
+***On transformed series:***
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+
+acf = data_diff %>%
+  ACF(data_log_diff_up,lag_max=10, na.action = na.pass) %>%
+  autoplot()
+
+pacf =  data_diff %>%
+  fill_gaps() %>%
+  PACF(data_log_diff_up) %>%
+  autoplot()
+
+acf + pacf
+```
+
+For the log transformed series without adding the difference, the ACF plot indicates that there is no dampening affect. This indicates that the series is an moving averages process .There are 3 significant lags in our ACF plot so it could be an MA process of order 3.
+
+We also know that the original series is non stationary and has to differenced twice, one for seasonality and one for the first difference. Therefore, the order of Integration is 1. The original data is ARIMA(0,1,3).
+
+##  ARIMA Modelling
+
+#### Model Fitting
+
+Fitting several ARIMA models on the original time series using our best guess from the previous section.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+data_transform <- data_train %>%
+  mutate(data_log = log1p(Value))
+# newdata <- data_diff%>%
+#  mutate(data_log_diff=data_log_diff + 1)
+# head(newdata)
+
+models_bic = data_transform %>%
+  as_tsibble()%>%
+  model(
+    mod1 = ARIMA(data_log~pdq(0,1,1)+PDQ(1,1,0)),
+    mod2 = ARIMA(data_log~pdq(0,1,3)+PDQ(0,0,0)),
+    mod3 = ARIMA(data_log~pdq(0,1,3)+PDQ(0,0,1)),
+    mod4 = ARIMA(data_log~pdq(3,1,3)+PDQ(0,1,0)),
+    mod5 = ARIMA(data_log~pdq(3,1,0)+PDQ(1,0,1))
+  )
+
+
+models_bic %>%
+  glance() %>%
+  arrange(BIC)
+
+
+```
+
+After fitting the above models, it can be seen that Model 2, which is close to our best guess models from Section 2, is the better fitting model. The BIC values for model 2 is the least which indicates that it is a better model.
+
+#### Auto ARIMA
+
+Trying to fit an auto ARIMA model below.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+data_transform <- data_train%>%
+  mutate(data_log = log1p(Value))
+data_transform %>%
+  as_tsibble()%>%
+model(
+  ARIMA(data_log,approximation=F, stepwise = F)
+) %>%
+report()
+```
+
+From the auto ARIMA model for transformed and original time series, there is a difference in the model output.On comparing our previous best model (i.e., Model 2) with auto ARIMA model, auto ARIMA model has the lowest BIC. From our earlier inference that we obtained from our ACF,PACF plots ARIMA(0,1,3)(0,0,1) makes sense too as it our second best model , we can understand that the model that our Auto Arima has returned is the best fitting model and it also has the lowest BIC.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+best_mod = data_transform %>%
+  as_tsibble()%>%
+model(
+  ARIMA(data_log,approximation=F, stepwise = F)
+) 
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+# Get fitted values
+fitted = best_mod %>%
+  augment() %>%
+  .$.fitted
+
+ggplot() +
+  geom_line(aes(data_transform$Year, data_transform$data_log)) +
+  geom_line(aes(data_transform$Year, fitted), color = "blue", alpha = 0.4) +
+  theme_bw() +
+  xlab("Year") +
+  ylab("Log transformed data")
+```
+
+#### Residual Diagnostics:
+
+Residual diagnostics help us understand the underlying patterns in our data.We can see that our residuals are normally distributed , so all the patterns in our data are being captured.Our variance seems to follow a constant pattern.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+best_mod %>%
+  gg_tsresiduals()
+```
+
+Above plot shows the residual after fitting the best model to our time series.
+
+To check if the selected model is the best model, further analysis on the residuals has to be done. As part of this, **Ljung-Box test** is performed to find any remaining autocorrelation in the residuals of the best model.
+
+**Ljung-Box test**
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+best_mod %>%
+  augment() %>%
+  features(.innov, ljung_box, lag = 5, dof = 4)
+```
+
+The p-value for Ljung-Box test is 0.2 which greater than 0.05 which implies that our residuals have no remaining autocorrelation.
+
+## Prophet Model
+
+#### **Facebook Prophet Model :**
+
+A facebook prophet model decomposes the time series data into multiple components : trend, seasonality and holidays. The trend component helps us understand the magnitude of change over time.The seasonality component helps us understand repeating patterns over fixed intervals , in our case it is yearly. This approach allows for flexible modeling of seasonal patterns and any irregular patterns in the data.
+
+#### **Capturing trend and seasonality :**
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+library(prophet)
+
+prophet_data = data_train %>% 
+    rename(ds = Year, # Have to name our date variable "ds"
+    y = Value)  # Have to name our time series "y"
+
+# train = prophet_data %>%  # Train set
+#   filter(ds<ymd("2022-01-01"))
+# 
+# test = prophet_data %>% # Test set
+#   filter(ds>=ymd("2022-01-01"))
+
+orig_model = prophet(prophet_data) # Train Model
+
+orig_future = make_future_dataframe(orig_model,periods = 12,freq='month') 
+
+orig_forecast = predict(orig_model,orig_future) # Get forecast
+
+plot(orig_model,orig_forecast)+
+  ylab("Temp Anomalies")+
+  xlab("Year")+
+  theme_bw()+
+  ggtitle("Prophet Model Forecast")
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+prophet_plot_components(orig_model,orig_forecast)
+```
+
+**Model that is being considered: 25 Changepoints with linear growth**
+
+Change points for initial model or original model. For the original model which has 25 change points , we notice that the change points are accumulated right after the year 2015, which resonates with the trend in the data which shows a substantial spike after 2015, this is because in the latter half of 2015 and 2016, the El Nino event had a direct impact on the increase in global earth temperature which caused the highest temperature fluctuation ever recorded but it does not accurately capture all the trends in our data.It also captures the dip in our trend line after 2010.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+
+plot(orig_model,orig_forecast) +
+  add_changepoints_to_plot(orig_model) +
+  theme_bw() +
+  xlab("Year") +
+  ylab("Temperture Anomalies")
+```
+
+**Comparison of linear growth vs logistic growth :** MAPE,MAE and RMSE are measures of the difference between the predicted values and the actual values, and lower values indicate that the model is better at predicting the outcome of interest.In our scenario linear model has lower values in all three cases and therefore we do not require saturation maximums and minimums and we assume that linear model fits our data better.
+Linear growth slightly seems to better represent the underlying data over logistic growth. Also, oil prices doesn\'t saturate to a point and varies with time. **Hence, linear model built above is considered to be the best prophet model.**
+
+```{r}
+prophet_data$cap = 150
+prophet_data$floor = 0
+
+log_future = orig_future %>%
+  mutate(cap = 150, floor = 0)
+
+log_model = prophet(prophet_data, growth = 'logistic',changepoint.prior.scale=0.5,n.changepoints = 25,changepoint.range=0.5, weekly.seasonality = FALSE, yearly.seasonality = TRUE, daily.seasonality = FALSE) # Logistic Growth Model
+
+log_forecast = predict(log_model,log_future) # Get forecast
+
+plot(log_model,log_forecast) +
+  add_changepoints_to_plot(log_model)+
+  ylab("Temp Anomalies ") +
+  xlab("Year") +
+  ylim(0,1.5)+
+  theme_bw() +
+  ggtitle("Prophet Model on the Temperature Anomalies"
+    ,subtitle = "Forecast for Temp Anomalies "
+  )
+```
+
+**Comparing additive and multiplicative Seasonality :**
+
+From the below RMSE values and plots , we can conclude that either of the seasonality works but the difference in RMSE values is negligible ,therefore we prefer additive seasonality over multiplicative.
+
+Since we don't have daily data, we do not have any impact due to holidays.
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+mod1 = prophet(prophet_data,seasonality.mode='additive')
+forecast1 = predict(mod1)
+
+mod2 = prophet(prophet_data,seasonality.mode='multiplicative')
+forecast2 = predict(mod2)
+
+forecast_metric_data_add = forecast1 %>% 
+  as_tibble() %>% 
+  mutate(ds = as.Date(ds))
+
+RMSE = sqrt(mean((prophet_data$y - forecast_metric_data_add$yhat)^2))
+
+print(paste("RMSE for additive seasonality:",round(RMSE,2)))
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+forecast_metric_data_multi = forecast2 %>% 
+  as_tibble() %>% 
+  mutate(ds = as.Date(ds))
+
+RMSE = sqrt(mean((prophet_data$y - forecast_metric_data_multi$yhat)^2))
+
+print(paste("RMSE for multiplicative seasonality:",round(RMSE,2)))
+```
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+additive = prophet(prophet_data)
+add_fcst = predict(additive,orig_future)
+multi = prophet(prophet_data,seasonality.mode = 'multiplicative')
+multi_fcst = predict(multi,orig_future)
+df.cv <- cross_validation(additive, initial = 7*365, period = 30, horizon = 180, units = 'days')
+#head(df.cv)
+
+unique(df.cv$cutoff)
+```
+
+ 
+
+```{r}
+#| echo: true
+#| code-fold: true
+#| warning: false
+df.cv %>% 
+  ggplot()+
+  geom_point(aes(ds,y)) +
+  geom_line(aes(ds,yhat,color=factor(cutoff)),size=0.5, alpha = 10)+
+  theme_bw()+
+  xlab("Date")+
+  ylab("Temperature Anomalies")+
+  scale_color_discrete(name = 'Cutoff')+
+  ylim(0.5,1.5)
+
+```
+
+##  Model Validation
+
+To evaluate the performance of the naive, best ARIMA, and best Prophet models, we implement cross-validation. The training length is set to 36 months or 3 years, and we use a rolling window of 6 months on the training dataset. For each cross-validation set, we generate a forecast for the next 12 months. The RMSE is calculated for each model to assess its performance.
+
+In the first half our data, ARIMA does a good job of capturing the underlying trend but loses track eventually , whereas SNaive forecast does moderately well throughout and captures most of our significant anomalies.
+
+We can confirm by the RMSE values of all our models that our Seasonal Naive forecast model is the best model of all and will be a good measure to predict future temperature anomalies on our planet. We have also taken into account our test while making our forecast and analyzed all the three models. With all that being considered, Seasonal Naive forecast is the best. It can also be inferred that RMSE increases as the forecast horizon increases.
+
+```{r}
+
+train_cv <- data_train %>%
+ as_tsibble() %>%
+ stretch_tsibble(.init = 24, .step = 6)
+
+naive_model <- train_cv %>%
+ model(SNAIVE(Value)) %>%
+ forecast(h = 12) %>%
+ group_by(.id) %>%
+ mutate(h = row_number()) %>%
+ ungroup() %>%
+ as_fable(response = "Value", distribution = Value)
+
+
+ accuracy_naive <- naive_model %>%
+ accuracy(as_tsibble(data_train), by = c("h", ".model"))
+ 
+best_arima <- train_cv %>%
+ model(
+ Arima = ARIMA(log(Value),approximation=F)
+ ) %>%
+ forecast(h = 12) %>%
+ group_by(.id) %>%
+ mutate(h = row_number()) %>%
+ ungroup() %>%
+ as_fable(response = "Value", distribution = Value)
+ accuracy_arima <- best_arima %>%
+ accuracy(as_tsibble(data_train), by = c("h", ".model"))
+
+best_prophet <- train_cv %>%
+ model(
+ Prophet = fable.prophet::prophet(Value ~ growth("linear", n_changepoints = 25, changepoint_range = 1,
+ changepoint_prior_scale = 0.1))
+ ) %>%
+ forecast(h = 12) %>%
+ group_by(.id) %>%
+ mutate(h = row_number()) %>%
+ ungroup() %>%
+ as_fable(response = "Value", distribution = Value)
+ 
+ accuracy_prophet <- best_prophet %>%
+ accuracy(as_tsibble(data_train), by = c("h", ".model"))
+ 
+ accuracy_comparison <- accuracy_naive %>%
+ bind_rows(accuracy_arima) %>%
+ bind_rows(accuracy_prophet)
+
+ accuracy_comparison <- accuracy_comparison %>%
+ rename(Horizon = h, Model = .model)
+ 
+ accuracy_comparison %>%
+ ggplot()+
+ geom_line(aes(Horizon,RMSE, color = Model)) +
+ theme_bw() +
+ xlab("Horizon (in Months)") +
+ ylab("RMSE") +
+ ggtitle("Model Performance Comparison Across Horizon"
+ ,subtitle = "Comparing Naive, Best Arima, Best Prophet Model"
+ )
+
+
+```
+
+## Best Forecast :
+
+## 
+
+We have generated a plot depicting the 3-year forecast for the test dataset, in accordance with our previous findings that the naive model outperformed the ARIMA and Prophet models. It can be observed that the forecast does not capture all the underlying trends accurately but manages to capture the essence of the trend line.
+
+```{r}
+best_model = data_train %>%
+ as_tsibble() %>%
+ model(SNAIVE(Value))
+best_model %>%
+ forecast(h=38) %>%
+ autoplot(
+ data_train %>%
+ as_tsibble() %>%
+ select(Year,Value) %>%
+ bind_rows(
+ data_test %>%
+ as_tsibble() %>%
+ select(Year,Value)
+ )
+ ) +
+ geom_vline(aes(xintercept = ymd("2020-01-01")), color = "red", linetype = "dashed") +
+ ggtitle("3-year Forecast vs Actual of Temperature Anomalies", subtitle = 'Naive Forecast with Seasonality')
+```
+
+It can be observed that the forecast does not capture all the underlying trends accurately but manages to capture the essence of the trend line.Therefore from our analysis we can establish that the model failed to capture the spike due to El Nino in the latter half of 2015 and early 2016, so we cannot say that it will capture these anomalies in the future, while the forecast looks to have good potential, it is not necessarily the best forecast for our temperature anomalies dataset.
