@@ -6,7 +6,7 @@ This repository contains code in R markdown and HTML files. Conducted an in-dept
 
 ### 📈 Forecasting Techniques:
 
-![](https://img.shields.io/badge/ARIMA-forecasting-FF4B4B?style=for-the-badge)
+![](https://img.shields.io/badge/ARIMA-FF4B4B?style=for-the-badge)
 ![](https://img.shields.io/badge/Prophet-FB5E5E?style=for-the-badge)
 ![](https://img.shields.io/badge/Trend_Analysis-FA8072?style=for-the-badge)
 
